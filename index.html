@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Panel de tareas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #0E1116; }
+  body { font-family: 'Inter', sans-serif; }
+  #root { min-height: 100vh; }
+  button { font-family: inherit; cursor: pointer; }
+  input, textarea, select { font-family: inherit; }
+  ::placeholder { color: #8993A1; opacity: 0.6; }
+  .tm-scroll::-webkit-scrollbar { height: 6px; }
+  .tm-scroll::-webkit-scrollbar-thumb { background: #2A323D; border-radius: 3px; }
+  .chip { border: 1px solid #2A323D; background: #1C232C; color: #8993A1; font-size: 12px; font-weight: 500; padding: 5px 11px; border-radius: 100px; white-space: nowrap; transition: all .15s; }
+  .chip:hover { border-color: #8993A1; color: #E6E9EE; }
+  .chip.active { background: #FF6A3D; border-color: #FF6A3D; color: #1A0D08; font-weight: 600; }
+  .task-row { border: 1px solid #2A323D; background: #161B22; border-radius: 10px; padding: 12px 14px; display: flex; align-items: flex-start; gap: 12px; transition: border-color .15s; }
+  .task-row:hover { border-color: #3A4452; }
+  .checkbox { width: 19px; height: 19px; border-radius: 5px; border: 1.5px solid #8993A1; background: transparent; flex-shrink: 0; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .checkbox.checked { background: #4ADE80; border-color: #4ADE80; }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .agenda-day { animation: slideIn 0.3s ease backwards; transition: border-color 0.2s ease; }
+  .agenda-block { animation: slideIn 0.25s ease backwards; transition: transform 0.15s ease, border-color 0.15s ease; cursor: pointer; }
+  .agenda-block:hover { transform: translateX(2px); border-color: #8993A1 !important; }
+  .kanban-col { transition: border-color 0.2s ease; }
+  .kanban-card { animation: slideIn 0.25s ease backwards; transition: transform 0.15s ease; }
+  .kanban-card:hover { transform: translateY(-2px); }
+  .priority-card { animation: slideIn 0.3s ease backwards; transition: transform 0.15s ease; }
+  .priority-card:hover { transform: scale(1.01); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo, useContext, createContext } = React;
+
+const TaxonomyContext = createContext({ clients: [], projects: [] });
+function useTaxonomy() { return useContext(TaxonomyContext); }
+
+const DEFAULT_PROJECTS = [
+  { id: "nods", label: "Grupo Nods" },
+  { id: "reagencia", label: "Re-Agencia" },
+  { id: "freelance", label: "Freelance" },
+];
+
+const DEFAULT_CLIENTS = [
+  { id: "anahuac_gmp", label: "ANAHUAC GMP", project: "nods" },
+  { id: "anahuac_ec", label: "ANAHUAC EC", project: "nods" },
+  { id: "liceo_javier", label: "Liceo Javier", project: "nods" },
+  { id: "colegio_javier", label: "Colegio Javier", project: "nods" },
+  { id: "ferrini", label: "Ferrini", project: "nods" },
+  { id: "misano", label: "Misano Neumáticos", project: "reagencia" },
+  { id: "melody", label: "Melody Lanas", project: "reagencia" },
+  { id: "petry", label: "Petry", project: "reagencia" },
+  { id: "aldo_peppino", label: "Aldo Peppino", project: "reagencia" },
+  { id: "destino", label: "Destino", project: "reagencia" },
+  { id: "aliat", label: "Aliat", project: "reagencia" },
+  { id: "salamandras", label: "Salamandras Córdoba", project: "freelance" },
+  { id: "westric", label: "Westric", project: "freelance" },
+  { id: "sensus", label: "Sensus Salud", project: "freelance" },
+  { id: "personal", label: "Personal", project: null },
+];
+
+const PRIORITIES = [
+  { id: "urgente", label: "Urgente", weight: 3 },
+  { id: "alta", label: "Alta", weight: 2 },
+  { id: "media", label: "Media", weight: 1 },
+  { id: "baja", label: "Baja", weight: 0 },
+];
+
+const VIEW_MODES = [
+  { id: "proyecto", label: "Proyecto" },
+  { id: "prioridad", label: "Prioridad" },
+  { id: "fecha", label: "Fecha" },
+];
+
+const DATA_VERSION = 0; // subir este número cuando agreguen tareas predefinidas en el código
+
+// Tareas predefinidas que se inyectan automáticamente la primera vez que se abre
+// el panel. Vacío por defecto: cada persona empieza con su propia lista en blanco.
+const CLAUDE_TASKS = [];
+
+// IDs de tareas obsoletas a eliminar del storage al detectar una versión nueva.
+const DEPRECATED_IDS = [];
+
+const STATUSES = [
+  { id: "pendiente", label: "Pendiente", color: "#8993A1" },
+  { id: "en_curso", label: "En curso", color: "#6B93E0" },
+  { id: "seguimiento", label: "Seguimiento", color: "#F0A23D" },
+  { id: "completada", label: "Completada", color: "#4ADE80" },
+];
+
+function statusMeta(id) {
+  return STATUSES.find((s) => s.id === id) || STATUSES[0];
+}
+
+function uid() {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+function priorityMeta(id) {
+  return PRIORITIES.find((p) => p.id === id) || PRIORITIES[2];
+}
+function formatDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + "T00:00:00");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((d - today) / 86400000);
+  const opts = { day: "2-digit", month: "short" };
+  const base = d.toLocaleDateString("es-AR", opts).replace(".", "");
+  if (diffDays === 0) return { text: "Hoy", urgent: true, overdue: false };
+  if (diffDays === 1) return { text: "Mañana", urgent: true, overdue: false };
+  if (diffDays < 0) return { text: base, urgent: true, overdue: true };
+  if (diffDays <= 3) return { text: base, urgent: true, overdue: false };
+  return { text: base, urgent: false, overdue: false };
+}
+
+function toISODate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function startOfWeek(date) {
+  // Semana de lunes a domingo
+  const d = new Date(date);
+  const day = d.getDay(); // 0 = domingo
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function getWeekDays(weekStart) {
+  // Solo lunes a viernes: fines de semana son días de descanso, no aparecen en la agenda.
+  const days = [];
+  for (let i = 0; i < 5; i++) {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + i);
+    days.push(d);
+  }
+  return days;
+}
+
+const WEEKDAY_LABELS = ["Lun", "Mar", "Mié", "Jue", "Vie"];
+const MONTH_LABELS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+
+function getTwoWeeks(weekStart) {
+  // Genera 2 semanas (Lun-Vie) a partir de weekStart.
+  const weeks = [];
+  for (let w = 0; w < 2; w++) {
+    const week = [];
+    for (let i = 0; i < 5; i++) {
+      const d = new Date(weekStart);
+      d.setDate(d.getDate() + w * 7 + i);
+      week.push(d);
+    }
+    weeks.push(week);
+  }
+  return weeks;
+}
+
+function TwoWeekCalendar({ tasks, onTaskClick, weekStart, onPrevWeeks, onNextWeeks, onToday }) {
+  const { clients } = useTaxonomy();
+  const todayISO = toISODate(new Date());
+  const weeks = useMemo(() => getTwoWeeks(weekStart), [weekStart]);
+  const rangeLabel = (() => {
+    const first = weeks[0][0], last = weeks[1][4];
+    const sameMonth = first.getMonth() === last.getMonth();
+    if (sameMonth) return `${first.getDate()}–${last.getDate()} ${MONTH_LABELS[first.getMonth()]} ${first.getFullYear()}`;
+    return `${first.getDate()} ${MONTH_LABELS[first.getMonth()]} – ${last.getDate()} ${MONTH_LABELS[last.getMonth()]} ${last.getFullYear()}`;
+  })();
+
+  const tasksByDay = useMemo(() => {
+    const map = {};
+    const addToDay = (date, item) => {
+      if (!date) return;
+      if (!map[date]) map[date] = [];
+      map[date].push(item);
+    };
+    tasks.forEach((t) => {
+      if (t.date) addToDay(t.date, { ...t, isSubtask: false });
+      (t.subtasks || []).forEach((s) => {
+        if (s.date) {
+          addToDay(s.date, {
+            id: `${t.id}__${s.id}`,
+            title: s.title,
+            parentTitle: t.title,
+            priority: t.priority,
+            status: s.status || "pendiente",
+            client: t.client,
+            parentTask: t,
+            isSubtask: true,
+          });
+        }
+      });
+    });
+    return map;
+  }, [tasks]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderBottom: "1px solid #2A323D" }}>
+        <button onClick={onPrevWeeks} style={{ background: "none", border: "1px solid #2A323D", borderRadius: "6px", color: "#8993A1", padding: "6px 12px", fontSize: "14px" }}>‹</button>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: "16px", textTransform: "capitalize" }}>{rangeLabel}</span>
+          <button onClick={onToday} style={{ background: "none", border: "1px solid #2A323D", borderRadius: "100px", color: "#8993A1", padding: "3px 11px", fontSize: "11px", fontFamily: "'JetBrains Mono', monospace" }}>hoy</button>
+        </div>
+        <button onClick={onNextWeeks} style={{ background: "none", border: "1px solid #2A323D", borderRadius: "6px", color: "#8993A1", padding: "6px 12px", fontSize: "14px" }}>›</button>
+      </div>
+
+      <div style={{ display: "flex", gap: "12px", padding: "10px 20px", flexWrap: "wrap", borderBottom: "1px solid #2A323D" }}>
+        {PRIORITIES.map((p) => {
+          const color = { urgente: "#FF6A3D", alta: "#F0A23D", media: "#6B93E0", baja: "#6B7280" }[p.id];
+          return (
+            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+              <div style={{ width: "8px", height: "8px", borderRadius: "2px", background: color }} />
+              <span style={{ fontSize: "10px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{p.label}</span>
+            </div>
+          );
+        })}
+        <span style={{ fontSize: "10px", color: "#3A4452", fontFamily: "'JetBrains Mono', monospace" }}>· el nombre del cliente aparece arriba de cada tarea</span>
+      </div>
+
+      <div style={{ padding: "14px 16px 24px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "8px", marginBottom: "8px" }}>
+          {WEEKDAY_LABELS.map((lbl) => (
+            <div key={lbl} style={{ textAlign: "center", fontSize: "11px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.04em" }}>
+              {lbl.toUpperCase()}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {weeks.map((week, wi) => (
+            <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "8px", alignItems: "stretch" }}>
+              {week.map((d, di) => {
+                const iso = toISODate(d);
+                const isToday = iso === todayISO;
+                const dayTasks = (tasksByDay[iso] || []).sort((a, b) => priorityMeta(b.priority).weight - priorityMeta(a.priority).weight);
+
+                return (
+                  <div
+                    key={iso}
+                    className="agenda-day tm-scroll"
+                    style={{
+                      minHeight: "150px", maxHeight: "320px", overflowY: "auto", border: `1px solid ${isToday ? "#FF6A3D" : "#2A323D"}`, borderRadius: "8px",
+                      background: isToday ? "#1C1410" : "#161B22", padding: "8px",
+                      animationDelay: `${(wi * 5 + di) * 0.02}s`,
+                    }}
+                  >
+                    <div style={{ fontSize: "13px", fontWeight: isToday ? 700 : 600, color: isToday ? "#FF6A3D" : "#C5CAD1", marginBottom: "6px", fontFamily: "'Space Grotesk', sans-serif" }}>
+                      {d.getDate()}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                      {dayTasks.length === 0 && (
+                        <div style={{ fontSize: "10px", color: "#3A4452" }}>—</div>
+                      )}
+                      {dayTasks.map((t) => {
+                        const priorityColor = { urgente: "#FF6A3D", alta: "#F0A23D", media: "#6B93E0", baja: "#6B7280" }[t.priority];
+                        const isDone = t.status === "completada";
+                        const client = clients.find((c) => c.id === t.client);
+                        const clickTarget = t.isSubtask ? t.parentTask : t;
+                        return (
+                          <button
+                            key={t.id}
+                            onClick={() => onTaskClick(clickTarget)}
+                            className="agenda-block"
+                            title={`${client ? client.label + " — " : ""}${t.isSubtask ? t.parentTitle + " → " : ""}${t.title}`}
+                            style={{
+                              textAlign: "left", background: "#1C232C", borderLeft: `2px solid ${priorityColor}`, border: "none",
+                              borderRadius: "4px", padding: "4px 6px", opacity: isDone ? 0.4 : 1, width: "100%",
+                            }}
+                          >
+                            {client && (
+                              <div style={{ fontSize: "9px", fontWeight: 700, color: priorityColor, fontFamily: "'JetBrains Mono', monospace", textTransform: "uppercase" }}>
+                                {client.label}
+                              </div>
+                            )}
+                            {t.isSubtask && (
+                              <div style={{ fontSize: "9px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                ↳ {t.parentTitle}
+                              </div>
+                            )}
+                            <div style={{ fontSize: "11px", fontWeight: 500, color: "#E6E9EE", textDecoration: isDone ? "line-through" : "none", lineHeight: 1.3, wordBreak: "break-word" }}>
+                              {t.isSubtask && "☑ "}{t.title}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function KanbanBoard({ tasks, onTaskClick, onSetSubtaskStatus }) {
+  const { clients } = useTaxonomy();
+  const columns = STATUSES;
+
+  return (
+    <div className="tm-scroll" style={{ display: "flex", gap: "10px", overflowX: "auto", padding: "16px 12px 24px" }}>
+      {columns.map((col) => {
+        const colTasks = tasks.filter((t) => t.status === col.id);
+        return (
+          <div
+            key={col.id}
+            className="kanban-col"
+            style={{ minWidth: "210px", flex: "1 0 210px", background: "#161B22", border: "1px solid #2A323D", borderRadius: "10px", padding: "10px" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px", paddingBottom: "8px", borderBottom: `2px solid ${col.color}` }}>
+              <span style={{ fontSize: "12px", fontWeight: 700, color: col.color, fontFamily: "'JetBrains Mono', monospace", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                {col.id === "completada" ? "Hecha" : col.label}
+              </span>
+              <span style={{ fontSize: "11px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{colTasks.length}</span>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "7px", minHeight: "30px" }}>
+              {colTasks.length === 0 && <div style={{ fontSize: "11px", color: "#3A4452", textAlign: "center", padding: "10px 0" }}>—</div>}
+              {colTasks.map((t, idx) => {
+                const priorityColor = { urgente: "#FF6A3D", alta: "#F0A23D", media: "#6B93E0", baja: "#6B7280" }[t.priority];
+                const client = clients.find((c) => c.id === t.client);
+                const dateInfo = formatDate(t.date);
+                const subtasks = t.subtasks || [];
+                const subDone = subtasks.filter((s) => s.status === "completada").length;
+                return (
+                  <div
+                    key={t.id}
+                    className="kanban-card"
+                    style={{ background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "9px 10px", animationDelay: `${idx * 0.03}s` }}
+                  >
+                    <button
+                      onClick={() => onTaskClick(t)}
+                      style={{ textAlign: "left", background: "none", border: "none", padding: 0, width: "100%", display: "block" }}
+                    >
+                      <div style={{ fontSize: "12px", fontWeight: 500, color: "#E6E9EE", marginBottom: "5px", lineHeight: 1.3 }}>{t.title}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                        {client && <span style={{ fontSize: "10px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{client.label}</span>}
+                        <span style={{ fontSize: "9px", fontWeight: 700, color: priorityColor, textTransform: "uppercase", fontFamily: "'JetBrains Mono', monospace" }}>{priorityMeta(t.priority).label}</span>
+                        {dateInfo && <span style={{ fontSize: "10px", color: dateInfo.overdue ? "#FF6A3D" : "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{dateInfo.text}</span>}
+                        {subtasks.length > 0 && <span style={{ fontSize: "10px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>☑ {subDone}/{subtasks.length}</span>}
+                      </div>
+                    </button>
+
+                    {subtasks.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "7px", marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #2A323D" }}>
+                        {subtasks.map((s) => {
+                          const sStatusMeta = statusMeta(s.status);
+                          const sDateInfo = formatDate(s.date);
+                          const isDone = s.status === "completada";
+                          return (
+                            <div key={s.id}>
+                              <div style={{ fontSize: "11px", color: isDone ? "#8993A1" : "#C5CAD1", textDecoration: isDone ? "line-through" : "none", lineHeight: 1.35, marginBottom: "4px" }}>
+                                {s.title}
+                                {sDateInfo && <span style={{ color: "#F0A23D", marginLeft: "5px", fontFamily: "'JetBrains Mono', monospace" }}>· {sDateInfo.text}</span>}
+                              </div>
+                              <div style={{ display: "flex", gap: "3px", flexWrap: "wrap" }}>
+                                {STATUSES.map((st) => {
+                                  const active = s.status === st.id;
+                                  return (
+                                    <button
+                                      key={st.id}
+                                      onClick={() => onSetSubtaskStatus(t.id, s.id, st.id)}
+                                      style={{
+                                        border: `1px solid ${active ? st.color : "#2A323D"}`, background: active ? st.color : "transparent",
+                                        color: active ? "#0E1116" : "#8993A1", borderRadius: "4px", padding: "2px 5px", fontSize: "9px",
+                                        fontWeight: active ? 700 : 500, fontFamily: "'JetBrains Mono', monospace",
+                                      }}
+                                    >
+                                      {st.id === "completada" ? "✓" : st.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+
+function PriorityView({ tasks, onTaskClick }) {
+  const { clients } = useTaxonomy();
+  const groups = PRIORITIES.map((p) => ({ ...p, tasks: tasks.filter((t) => t.priority === p.id) }));
+  const colors = { urgente: "#FF6A3D", alta: "#F0A23D", media: "#6B93E0", baja: "#6B7280" };
+
+  return (
+    <div style={{ padding: "16px 20px 24px", display: "flex", flexDirection: "column", gap: "18px" }}>
+      {groups.map((g) => {
+        if (g.tasks.length === 0) return null;
+        const color = colors[g.id];
+        const isUrgent = g.id === "urgente";
+        return (
+          <div key={g.id}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+              <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: color }} />
+              <span style={{ fontSize: isUrgent ? "14px" : "12px", fontWeight: 700, color, fontFamily: "'JetBrains Mono', monospace", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                {g.label}
+              </span>
+              <span style={{ fontSize: "11px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>· {g.tasks.length}</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: isUrgent ? "1fr" : "repeat(auto-fit, minmax(220px, 1fr))", gap: "8px" }}>
+              {g.tasks.map((t, idx) => {
+                const client = clients.find((c) => c.id === t.client);
+                const dateInfo = formatDate(t.date);
+                const statusInfo = statusMeta(t.status);
+                const isDone = t.status === "completada";
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => onTaskClick(t)}
+                    className="priority-card"
+                    style={{
+                      textAlign: "left", background: "#161B22", border: `1px solid ${color}`, borderLeft: `4px solid ${color}`,
+                      borderRadius: "10px", padding: isUrgent ? "14px 16px" : "11px 13px", opacity: isDone ? 0.5 : 1,
+                      animationDelay: `${idx * 0.04}s`,
+                    }}
+                  >
+                    <div style={{ fontSize: isUrgent ? "15px" : "13px", fontWeight: 600, color: "#E6E9EE", marginBottom: "6px", lineHeight: 1.3, textDecoration: isDone ? "line-through" : "none" }}>
+                      {t.title}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      {client && <span style={{ fontSize: "11px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{client.label}</span>}
+                      <span style={{ fontSize: "10px", color: statusInfo.color, fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{isDone ? "✓ Hecha" : statusInfo.label}</span>
+                      {dateInfo && <span style={{ fontSize: "11px", color: dateInfo.overdue ? "#FF6A3D" : "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{dateInfo.text}</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+
+function App() {
+  const [tasks, setTasks] = useState([]);
+  const [clients, setClients] = useState(DEFAULT_CLIENTS);
+  const [projects, setProjects] = useState(DEFAULT_PROJECTS);
+  const [loaded, setLoaded] = useState(false);
+  const [viewMode, setViewMode] = useState("proyecto");
+  const [activeFilter, setActiveFilter] = useState(null);
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [draft, setDraft] = useState({ title: "", client: "", priority: "media", date: "", notes: "" });
+  const [editingTaskId, setEditingTaskId] = useState(null);
+  const editingTask = editingTaskId ? tasks.find((t) => t.id === editingTaskId) || null : null;
+  const [calWeekStart, setCalWeekStart] = useState(() => startOfWeek(new Date()));
+
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState(false);
+  const removedIdsRef = React.useRef([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/tasks");
+        const remote = await res.json();
+        let current = remote.tasks || [];
+        const storedVersion = remote.dataVersion || 0;
+        removedIdsRef.current = remote.removedIds || [];
+
+        // Migración: tareas guardadas con el modelo viejo (done: true/false)
+        // pasan al modelo de 4 estados sin perder si ya estaban completadas.
+        current = current.map((t) => {
+          let migrated = t;
+          if (!migrated.status) {
+            migrated = { ...migrated, status: migrated.done ? "completada" : "pendiente", followUpDate: migrated.followUpDate || null };
+          }
+          // Subtareas viejas con done: boolean pasan a status completo (Pendiente/En curso/Seguimiento/Hecha).
+          if ((migrated.subtasks || []).some((s) => !s.status)) {
+            migrated = { ...migrated, subtasks: migrated.subtasks.map((s) => (s.status ? s : { ...s, status: s.done ? "completada" : "pendiente" })) };
+          }
+          return migrated;
+        });
+
+        if (storedVersion < DATA_VERSION) {
+          // Hay tareas nuevas o corregidas desde el chat: las mergeamos.
+          // Si una tarea con el mismo id ya existe (el usuario pudo haberla tocado:
+          // completarla, editarla, borrarla), respetamos lo que el usuario hizo
+          // y solo sumamos las que son genuinamente nuevas.
+          current = current.filter((t) => !DEPRECATED_IDS.includes(t.id));
+          const existingIds = new Set(current.map((t) => t.id));
+          const toAdd = CLAUDE_TASKS.filter((t) => !existingIds.has(t.id) && !removedIdsRef.current.includes(t.id));
+          current = [...toAdd, ...current];
+        }
+
+        setTasks(current);
+        // Clientes y proyectos: si el storage remoto ya tiene una lista guardada
+        // (porque el usuario editó algo), se respeta. Si no, arranca con la base por defecto.
+        setClients(remote.clients && remote.clients.length > 0 ? remote.clients : DEFAULT_CLIENTS);
+        setProjects(remote.projects && remote.projects.length > 0 ? remote.projects : DEFAULT_PROJECTS);
+      } catch (e) {
+        setSyncError(true);
+        setTasks(CLAUDE_TASKS);
+      }
+      setLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    setSyncing(true);
+    const save = async () => {
+      try {
+        const res = await fetch("/api/tasks", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tasks, clients, projects, dataVersion: DATA_VERSION, removedIds: removedIdsRef.current }),
+        });
+        setSyncError(!res.ok);
+      } catch (e) {
+        setSyncError(true);
+      }
+      setSyncing(false);
+    };
+    const timeout = setTimeout(save, 500); // debounce: agrupa cambios rápidos (varios clicks seguidos) en un solo guardado
+    return () => clearTimeout(timeout);
+  }, [tasks, clients, projects, loaded]);
+
+  const addProject = (label) => {
+    const id = "proj_" + uid();
+    setProjects((prev) => [...prev, { id, label }]);
+  };
+
+  const updateProject = (id, label) => {
+    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, label } : p)));
+  };
+
+  const removeProject = (id) => {
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    // Los clientes que pertenecían a este proyecto quedan sin proyecto (no se borran).
+    setClients((prev) => prev.map((c) => (c.project === id ? { ...c, project: null } : c)));
+  };
+
+  const addClient = (label, project) => {
+    const id = "client_" + uid();
+    setClients((prev) => [...prev, { id, label, project: project || null }]);
+  };
+
+  const updateClient = (id, updates) => {
+    setClients((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates } : c)));
+  };
+
+  const removeClient = (id) => {
+    setClients((prev) => prev.filter((c) => c.id !== id));
+    // Las tareas que tenían este cliente quedan sin cliente (no se borran).
+    setTasks((prev) => prev.map((t) => (t.client === id ? { ...t, client: "personal" } : t)));
+  };
+
+  const addTask = () => {
+    if (!draft.title.trim()) return;
+    const t = {
+      id: uid(),
+      title: draft.title.trim(),
+      client: draft.client || "personal",
+      priority: draft.priority,
+      date: draft.date || null,
+      notes: draft.notes.trim(),
+      status: "pendiente",
+      followUpDate: null,
+      subtasks: [],
+      createdAt: Date.now(),
+    };
+    setTasks((prev) => [t, ...prev]);
+    setDraft({ title: "", client: "", priority: "media", date: "", notes: "" });
+    setShowForm(false);
+  };
+
+  const setStatus = (id, statusId) => {
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status: statusId } : t)));
+  };
+
+  const setFollowUp = (id, date) => {
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, followUpDate: date } : t)));
+  };
+
+  const saveEdit = (id, updates) => {
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...updates } : t)));
+    setEditingTaskId(null);
+  };
+
+  const addSubtask = (taskId, title) => {
+    setTasks((prev) => prev.map((t) => {
+      if (t.id !== taskId) return t;
+      const subtasks = [...(t.subtasks || []), { id: uid(), title, status: "pendiente", date: null }];
+      return { ...t, subtasks };
+    }));
+  };
+
+  const setSubtaskStatus = (taskId, subtaskId, statusId) => {
+    setTasks((prev) => prev.map((t) => {
+      if (t.id !== taskId) return t;
+      const subtasks = (t.subtasks || []).map((s) => (s.id === subtaskId ? { ...s, status: statusId } : s));
+      return { ...t, subtasks };
+    }));
+  };
+
+  const removeSubtask = (taskId, subtaskId) => {
+    setTasks((prev) => prev.map((t) => {
+      if (t.id !== taskId) return t;
+      const subtasks = (t.subtasks || []).filter((s) => s.id !== subtaskId);
+      return { ...t, subtasks };
+    }));
+  };
+
+  const setSubtaskDate = (taskId, subtaskId, date) => {
+    setTasks((prev) => prev.map((t) => {
+      if (t.id !== taskId) return t;
+      const subtasks = (t.subtasks || []).map((s) => (s.id === subtaskId ? { ...s, date: date || null } : s));
+      return { ...t, subtasks };
+    }));
+  };
+
+  const removeTask = (id) => {
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+    if (!removedIdsRef.current.includes(id)) {
+      removedIdsRef.current = [...removedIdsRef.current, id];
+    }
+  };
+
+  const visibleTasks = useMemo(() => {
+    let list = tasks.filter((t) => (showCompleted ? true : t.status !== "completada"));
+    if (activeFilter && viewMode === "proyecto") {
+      list = list.filter((t) => clients.find((c) => c.id === t.client)?.project === activeFilter);
+    }
+    return list.sort((a, b) => {
+      const aDone = a.status === "completada", bDone = b.status === "completada";
+      if (aDone !== bDone) return aDone ? 1 : -1;
+      const pw = priorityMeta(b.priority).weight - priorityMeta(a.priority).weight;
+      if (!a.date && !b.date) return pw || b.createdAt - a.createdAt;
+      if (!a.date) return 1;
+      if (!b.date) return -1;
+      return a.date.localeCompare(b.date) || pw;
+    });
+  }, [tasks, activeFilter, viewMode, showCompleted]);
+
+  const calendarTasks = useMemo(() => {
+    return tasks.filter((t) => (showCompleted ? true : t.status !== "completada"));
+  }, [tasks, showCompleted]);
+
+  const counts = useMemo(() => {
+    const open = tasks.filter((t) => t.status !== "completada");
+    const urgentToday = open.filter((t) => t.date && formatDate(t.date)?.urgent);
+    const followUpsDue = open.filter((t) => t.followUpDate && formatDate(t.followUpDate)?.urgent);
+    return { open: open.length, urgent: urgentToday.length, followUps: followUpsDue.length };
+  }, [tasks]);
+
+  const filterOptions = viewMode === "proyecto" ? projects : [];
+
+  return (
+    <TaxonomyContext.Provider value={{ clients, projects }}>
+    <div style={{ background: "#0E1116", color: "#E6E9EE", minHeight: "100vh", maxWidth: viewMode === "fecha" ? "920px" : "640px", margin: "0 auto", transition: "max-width 0.2s ease" }}>
+      <div style={{ borderBottom: "1px solid #2A323D", padding: "18px 20px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", color: "#FF6A3D", letterSpacing: "0.08em", marginBottom: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
+            CENTRO DE OPERACIONES
+            {syncError && <span style={{ color: "#FF6A3D" }}>· sin conexión, no se guardó el último cambio</span>}
+            {!syncError && syncing && <span style={{ color: "#8993A1" }}>· guardando...</span>}
+            {!syncError && !syncing && loaded && <span style={{ color: "#4ADE80" }}>· sincronizado</span>}
+          </div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: "12px", flexWrap: "wrap" }}>
+            <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: "22px", fontWeight: 700, margin: 0, letterSpacing: "-0.01em" }}>
+              Panel de tareas
+            </h1>
+            <span style={{ fontSize: "12px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>
+              {counts.open} abiertas
+              {counts.urgent > 0 && <span style={{ color: "#FF6A3D" }}> · {counts.urgent} con fecha próxima</span>}
+              {counts.followUps > 0 && <span style={{ color: "#F0A23D" }}> · {counts.followUps} a seguir</span>}
+            </span>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button onClick={() => setShowAdmin(true)} title="Administrar clientes y proyectos" style={{ background: "#1C232C", color: "#8993A1", border: "1px solid #2A323D", borderRadius: "9px", padding: "10px 13px", fontSize: "13px" }}>
+            ⚙
+          </button>
+          <button onClick={() => setShowForm(true)} style={{ background: "#FF6A3D", color: "#1A0D08", border: "none", borderRadius: "9px", padding: "10px 16px", fontWeight: 600, fontSize: "13px" }}>
+            + Nueva tarea
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: "4px", padding: "14px 20px 0", borderBottom: "1px solid #2A323D" }}>
+        {VIEW_MODES.map((v) => (
+          <button key={v.id} onClick={() => { setViewMode(v.id); setActiveFilter(null); }} style={{ background: "transparent", border: "none", padding: "0 4px 12px", fontSize: "13px", fontWeight: 600, color: viewMode === v.id ? "#E6E9EE" : "#8993A1", borderBottom: viewMode === v.id ? "2px solid #FF6A3D" : "2px solid transparent", marginRight: "18px", fontFamily: "'Space Grotesk', sans-serif" }}>
+            {v.label}
+          </button>
+        ))}
+      </div>
+
+      {viewMode === "proyecto" && (
+        <div className="tm-scroll" style={{ display: "flex", gap: "7px", padding: "14px 20px", overflowX: "auto", borderBottom: "1px solid #2A323D" }}>
+          <button className={`chip ${activeFilter === null ? "active" : ""}`} onClick={() => setActiveFilter(null)}>Todas</button>
+          {filterOptions.map((opt) => (
+            <button key={opt.id} className={`chip ${activeFilter === opt.id ? "active" : ""}`} onClick={() => setActiveFilter(opt.id)}>{opt.label}</button>
+          ))}
+        </div>
+      )}
+
+      {!loaded && (
+        <div style={{ textAlign: "center", padding: "50px 20px", color: "#8993A1" }}>
+          <div style={{ fontSize: "13px" }}>Cargando tus tareas...</div>
+        </div>
+      )}
+
+      {loaded && tasks.length === 0 && (
+        <div style={{ textAlign: "center", padding: "50px 20px", color: "#8993A1", border: "1px dashed #2A323D", borderRadius: "12px", margin: "18px 20px" }}>
+          <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: "15px", color: "#E6E9EE", marginBottom: "4px" }}>Sin tareas acá</div>
+          <div style={{ fontSize: "13px" }}>Tocá "Nueva tarea" para agregar la primera.</div>
+        </div>
+      )}
+
+      {loaded && tasks.length > 0 && viewMode === "fecha" && (
+        <TwoWeekCalendar
+          tasks={calendarTasks}
+          onTaskClick={(t) => setEditingTaskId(t.id)}
+          weekStart={calWeekStart}
+          onPrevWeeks={() => setCalWeekStart((d) => { const n = new Date(d); n.setDate(n.getDate() - 14); return n; })}
+          onNextWeeks={() => setCalWeekStart((d) => { const n = new Date(d); n.setDate(n.getDate() + 14); return n; })}
+          onToday={() => setCalWeekStart(startOfWeek(new Date()))}
+        />
+      )}
+
+      {loaded && tasks.length > 0 && viewMode === "proyecto" && (
+        <KanbanBoard tasks={visibleTasks} onTaskClick={(t) => setEditingTaskId(t.id)} onSetSubtaskStatus={setSubtaskStatus} />
+      )}
+
+      {loaded && tasks.length > 0 && viewMode === "prioridad" && (
+        <PriorityView tasks={visibleTasks} onTaskClick={(t) => setEditingTaskId(t.id)} />
+      )}
+
+      <div style={{ padding: "0 20px 28px" }}>
+        {tasks.some((t) => t.status === "completada") && (
+          <button onClick={() => setShowCompleted((s) => !s)} style={{ background: "transparent", border: "none", color: "#8993A1", fontSize: "12px", marginTop: "8px", textDecoration: "underline" }}>
+            {showCompleted ? "Ocultar completadas" : "Ver completadas"}
+          </button>
+        )}
+      </div>
+
+      {showForm && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: "16px" }} onClick={() => setShowForm(false)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: "#161B22", border: "1px solid #2A323D", borderRadius: "16px", width: "100%", maxWidth: "440px", padding: "20px", maxHeight: "85vh", overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: "16px" }}>Nueva tarea</span>
+              <button onClick={() => setShowForm(false)} style={{ background: "none", border: "none", color: "#8993A1", fontSize: "18px" }}>✕</button>
+            </div>
+
+            <input autoFocus placeholder="¿Qué hay que hacer?" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+              style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "11px 12px", color: "#E6E9EE", fontSize: "14px", marginBottom: "12px", outline: "none" }} />
+
+            <div style={{ marginBottom: "12px" }}>
+              <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "6px", fontFamily: "'JetBrains Mono', monospace" }}>CLIENTE</div>
+              <select value={draft.client} onChange={(e) => setDraft({ ...draft, client: e.target.value })}
+                style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "10px 12px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}>
+                <option value="">Sin cliente / personal</option>
+                {projects.map((p) => (
+                  <optgroup key={p.id} label={p.label}>
+                    {clients.filter((c) => c.project === p.id).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", marginBottom: "12px" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "6px", fontFamily: "'JetBrains Mono', monospace" }}>PRIORIDAD</div>
+                <select value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })}
+                  style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "10px 12px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}>
+                  {PRIORITIES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "6px", fontFamily: "'JetBrains Mono', monospace" }}>FECHA</div>
+                <input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })}
+                  style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "9px 10px", color: "#E6E9EE", fontSize: "13px", outline: "none" }} />
+              </div>
+            </div>
+
+            <textarea placeholder="Notas (opcional)" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} rows={2}
+              style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "10px 12px", color: "#E6E9EE", fontSize: "13px", outline: "none", resize: "none", marginBottom: "16px" }} />
+
+            <button onClick={addTask} disabled={!draft.title.trim()}
+              style={{ width: "100%", background: draft.title.trim() ? "#FF6A3D" : "#2A323D", color: draft.title.trim() ? "#1A0D08" : "#8993A1", border: "none", borderRadius: "9px", padding: "13px", fontWeight: 700, fontSize: "14px", fontFamily: "'Space Grotesk', sans-serif" }}>
+              Agregar tarea
+            </button>
+          </div>
+        </div>
+      )}
+
+      {editingTask && (
+        <EditModal task={editingTask} onSave={saveEdit} onClose={() => setEditingTaskId(null)} onSetStatus={setStatus} onSetFollowUp={setFollowUp} onSetSubtaskStatus={setSubtaskStatus} onAddSubtask={addSubtask} onRemoveSubtask={removeSubtask} onSetSubtaskDate={setSubtaskDate} onDelete={(id) => { removeTask(id); setEditingTaskId(null); }} />
+      )}
+
+      {showAdmin && (
+        <AdminModal
+          clients={clients}
+          projects={projects}
+          onClose={() => setShowAdmin(false)}
+          onAddProject={addProject}
+          onUpdateProject={updateProject}
+          onRemoveProject={removeProject}
+          onAddClient={addClient}
+          onUpdateClient={updateClient}
+          onRemoveClient={removeClient}
+        />
+      )}
+    </div>
+    </TaxonomyContext.Provider>
+  );
+}
+
+function AdminModal({ clients, projects, onClose, onAddProject, onUpdateProject, onRemoveProject, onAddClient, onUpdateClient, onRemoveClient }) {
+  const [newProjectLabel, setNewProjectLabel] = React.useState("");
+  const [newClientLabel, setNewClientLabel] = React.useState("");
+  const [newClientProject, setNewClientProject] = React.useState("");
+  const [editingProjectId, setEditingProjectId] = React.useState(null);
+  const [editingClientId, setEditingClientId] = React.useState(null);
+  const [editDraft, setEditDraft] = React.useState("");
+
+  const submitProject = () => {
+    if (!newProjectLabel.trim()) return;
+    onAddProject(newProjectLabel.trim());
+    setNewProjectLabel("");
+  };
+
+  const submitClient = () => {
+    if (!newClientLabel.trim()) return;
+    onAddClient(newClientLabel.trim(), newClientProject || null);
+    setNewClientLabel("");
+  };
+
+  const startEditProject = (p) => { setEditingProjectId(p.id); setEditDraft(p.label); };
+  const startEditClient = (c) => { setEditingClientId(c.id); setEditDraft(c.label); };
+
+  const confirmEditProject = () => {
+    if (editDraft.trim()) onUpdateProject(editingProjectId, editDraft.trim());
+    setEditingProjectId(null);
+  };
+  const confirmEditClient = () => {
+    if (editDraft.trim()) onUpdateClient(editingClientId, { label: editDraft.trim() });
+    setEditingClientId(null);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: "16px" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#161B22", border: "1px solid #2A323D", borderRadius: "16px", width: "100%", maxWidth: "480px", maxHeight: "88vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 20px 14px", borderBottom: "1px solid #2A323D" }}>
+          <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: "16px" }}>Administrar clientes y proyectos</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#8993A1", fontSize: "20px" }}>✕</button>
+        </div>
+
+        {/* Proyectos */}
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #2A323D" }}>
+          <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "10px", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.04em" }}>PROYECTOS</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "10px" }}>
+            {projects.map((p) => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: "8px", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "8px 10px" }}>
+                {editingProjectId === p.id ? (
+                  <input
+                    autoFocus
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") confirmEditProject(); if (e.key === "Escape") setEditingProjectId(null); }}
+                    onBlur={confirmEditProject}
+                    style={{ flex: 1, background: "#0E1116", border: "1px solid #2A323D", borderRadius: "6px", padding: "5px 7px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}
+                  />
+                ) : (
+                  <span onClick={() => startEditProject(p)} style={{ flex: 1, fontSize: "13px", color: "#E6E9EE", cursor: "pointer" }}>{p.label}</span>
+                )}
+                <button onClick={() => startEditProject(p)} title="Editar" style={{ background: "none", border: "none", color: "#8993A1", fontSize: "13px" }}>✎</button>
+                <button onClick={() => onRemoveProject(p.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#8993A1", fontSize: "13px" }}>✕</button>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input
+              value={newProjectLabel}
+              onChange={(e) => setNewProjectLabel(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") submitProject(); }}
+              placeholder="+ nuevo proyecto"
+              style={{ flex: 1, background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "8px 10px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}
+            />
+            <button onClick={submitProject} style={{ background: "#FF6A3D", color: "#1A0D08", border: "none", borderRadius: "8px", padding: "8px 14px", fontSize: "13px", fontWeight: 700 }}>+</button>
+          </div>
+        </div>
+
+        {/* Clientes */}
+        <div style={{ padding: "16px 20px" }}>
+          <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "10px", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.04em" }}>CLIENTES</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "10px", maxHeight: "260px", overflowY: "auto" }}>
+            {clients.map((c) => {
+              const proj = projects.find((p) => p.id === c.project);
+              return (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "8px", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "8px 10px" }}>
+                  {editingClientId === c.id ? (
+                    <input
+                      autoFocus
+                      value={editDraft}
+                      onChange={(e) => setEditDraft(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") confirmEditClient(); if (e.key === "Escape") setEditingClientId(null); }}
+                      onBlur={confirmEditClient}
+                      style={{ flex: 1, background: "#0E1116", border: "1px solid #2A323D", borderRadius: "6px", padding: "5px 7px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}
+                    />
+                  ) : (
+                    <div style={{ flex: 1, cursor: "pointer" }} onClick={() => startEditClient(c)}>
+                      <div style={{ fontSize: "13px", color: "#E6E9EE" }}>{c.label}</div>
+                      {proj && <div style={{ fontSize: "10px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{proj.label}</div>}
+                    </div>
+                  )}
+                  <select
+                    value={c.project || ""}
+                    onChange={(e) => onUpdateClient(c.id, { project: e.target.value || null })}
+                    title="Cambiar proyecto"
+                    style={{ background: "#0E1116", border: "1px solid #2A323D", borderRadius: "6px", padding: "4px 6px", color: "#8993A1", fontSize: "11px", outline: "none" }}
+                  >
+                    <option value="">Sin proyecto</option>
+                    {projects.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                  </select>
+                  <button onClick={() => onRemoveClient(c.id)} title="Eliminar" style={{ background: "none", border: "none", color: "#8993A1", fontSize: "13px" }}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", gap: "6px" }}>
+            <input
+              value={newClientLabel}
+              onChange={(e) => setNewClientLabel(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") submitClient(); }}
+              placeholder="+ nuevo cliente"
+              style={{ flex: 1, background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "8px 10px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}
+            />
+            <select
+              value={newClientProject}
+              onChange={(e) => setNewClientProject(e.target.value)}
+              style={{ background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "8px 8px", color: "#E6E9EE", fontSize: "12px", outline: "none" }}
+            >
+              <option value="">Sin proyecto</option>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+            <button onClick={submitClient} style={{ background: "#FF6A3D", color: "#1A0D08", border: "none", borderRadius: "8px", padding: "8px 14px", fontSize: "13px", fontWeight: 700 }}>+</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditModal({ task, onSave, onClose, onSetStatus, onSetFollowUp, onSetSubtaskStatus, onAddSubtask, onRemoveSubtask, onSetSubtaskDate, onDelete }) {
+  const { clients, projects } = useTaxonomy();
+  const [form, setForm] = React.useState({
+    title: task.title,
+    client: task.client === "personal" ? "" : task.client,
+    priority: task.priority,
+    date: task.date || "",
+    notes: task.notes || "",
+  });
+  const [pendingFollowUp, setPendingFollowUp] = React.useState(false);
+  const client = clients.find((c) => c.id === task.client);
+  const priorityColor = { urgente: "#FF6A3D", alta: "#F0A23D", media: "#6B93E0", baja: "#6B7280" }[form.priority];
+
+  const handleSave = () => {
+    if (!form.title.trim()) return;
+    onSave(task.id, {
+      title: form.title.trim(),
+      client: form.client || "personal",
+      priority: form.priority,
+      date: form.date || null,
+      notes: form.notes.trim(),
+    });
+  };
+
+  const handleTabClick = (statusId) => {
+    if (statusId === "seguimiento") {
+      setPendingFollowUp(true);
+      return;
+    }
+    onSetStatus(task.id, statusId);
+  };
+
+  const confirmFollowUp = (date) => {
+    if (!date) return;
+    onSetFollowUp(task.id, date);
+    onSetStatus(task.id, "seguimiento");
+    setPendingFollowUp(false);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: "16px" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#161B22", border: `1px solid ${priorityColor}`, borderRadius: "16px", width: "100%", maxWidth: "480px", maxHeight: "88vh", overflowY: "auto" }}>
+        {/* Header con título editable inline */}
+        <div style={{ padding: "20px 20px 14px", borderBottom: "1px solid #2A323D" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", marginBottom: "10px" }}>
+            <input
+              value={form.title}
+              onChange={(e) => setForm({ ...form, title: e.target.value })}
+              style={{ flex: 1, background: "transparent", border: "none", color: "#E6E9EE", fontSize: "18px", fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif", outline: "none", padding: "2px 0" }}
+            />
+            <button onClick={onClose} style={{ background: "none", border: "none", color: "#8993A1", fontSize: "20px", flexShrink: 0 }}>✕</button>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            {client && <span style={{ fontSize: "12px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{client.label}</span>}
+            <span style={{ fontSize: "11px", fontWeight: 700, color: priorityColor, textTransform: "uppercase", letterSpacing: "0.04em", fontFamily: "'JetBrains Mono', monospace" }}>{priorityMeta(form.priority).label}</span>
+            {form.date && (
+              <span style={{ fontSize: "12px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{formatDate(form.date)?.text}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Estado */}
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #2A323D" }}>
+          <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "8px", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.04em" }}>ESTADO</div>
+          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+            {STATUSES.map((s) => {
+              const active = task.status === s.id;
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => handleTabClick(s.id)}
+                  style={{
+                    border: `1px solid ${active ? s.color : "#2A323D"}`, background: active ? s.color : "transparent",
+                    color: active ? "#0E1116" : "#8993A1", borderRadius: "7px", padding: "6px 11px", fontSize: "12px",
+                    fontWeight: active ? 700 : 500, fontFamily: "'JetBrains Mono', monospace", whiteSpace: "nowrap",
+                  }}
+                >
+                  {s.id === "completada" ? "✓ Hecha" : s.label}
+                </button>
+              );
+            })}
+          </div>
+          {task.status === "seguimiento" && task.followUpDate && !pendingFollowUp && (
+            <button
+              onClick={() => setPendingFollowUp(true)}
+              style={{ marginTop: "8px", background: "none", border: "none", color: "#F0A23D", fontSize: "12px", textDecoration: "underline", fontFamily: "'JetBrains Mono', monospace" }}
+            >
+              ↻ seguir {formatDate(task.followUpDate)?.text} — cambiar fecha
+            </button>
+          )}
+          {pendingFollowUp && (
+            <div style={{ marginTop: "10px", padding: "10px", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px" }}>
+              <div style={{ fontSize: "10px", color: "#F0A23D", marginBottom: "6px", fontFamily: "'JetBrains Mono', monospace" }}>¿CUÁNDO QUERÉS RETOMARLA?</div>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <input
+                  type="date"
+                  ref={(el) => { if (el) { el.focus(); try { el.showPicker(); } catch (e) {} } }}
+                  min={new Date().toISOString().slice(0, 10)}
+                  defaultValue={task.followUpDate || ""}
+                  onChange={(e) => confirmFollowUp(e.target.value)}
+                  style={{ background: "#0E1116", border: "1px solid #2A323D", borderRadius: "6px", padding: "6px 8px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}
+                />
+                <button onClick={() => setPendingFollowUp(false)} style={{ background: "none", border: "none", color: "#8993A1", fontSize: "12px", textDecoration: "underline" }}>cancelar</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Detalles: cliente, prioridad, fecha */}
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #2A323D" }}>
+          <div style={{ display: "flex", gap: "10px", marginBottom: "10px" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "6px", fontFamily: "'JetBrains Mono', monospace" }}>CLIENTE</div>
+              <select value={form.client} onChange={(e) => setForm({ ...form, client: e.target.value })}
+                style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "9px 10px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}>
+                <option value="">Sin cliente / personal</option>
+                {projects.map((p) => (
+                  <optgroup key={p.id} label={p.label}>
+                    {clients.filter((c) => c.project === p.id).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: "10px" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "6px", fontFamily: "'JetBrains Mono', monospace" }}>PRIORIDAD</div>
+              <select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}
+                style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "9px 10px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}>
+                {PRIORITIES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "6px", fontFamily: "'JetBrains Mono', monospace" }}>FECHA</div>
+              <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })}
+                style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "8px 9px", color: "#E6E9EE", fontSize: "13px", outline: "none" }} />
+            </div>
+          </div>
+        </div>
+
+        {/* Notas */}
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #2A323D" }}>
+          <div style={{ fontSize: "11px", color: "#8993A1", marginBottom: "6px", fontFamily: "'JetBrains Mono', monospace" }}>NOTAS</div>
+          <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={2} placeholder="Sin notas todavía..."
+            style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "10px 12px", color: "#E6E9EE", fontSize: "13px", outline: "none", resize: "none" }} />
+        </div>
+
+        {/* Subtareas */}
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #2A323D" }}>
+          <SubtaskChecklist task={task} onSetStatus={onSetSubtaskStatus} onAdd={onAddSubtask} onRemove={onRemoveSubtask} onSetDate={onSetSubtaskDate} />
+        </div>
+
+        {/* Acciones */}
+        <div style={{ padding: "16px 20px" }}>
+          <button onClick={handleSave} disabled={!form.title.trim()}
+            style={{ width: "100%", background: form.title.trim() ? "#FF6A3D" : "#2A323D", color: form.title.trim() ? "#1A0D08" : "#8993A1", border: "none", borderRadius: "9px", padding: "13px", fontWeight: 700, fontSize: "14px", fontFamily: "'Space Grotesk', sans-serif", marginBottom: "8px" }}>
+            Guardar cambios
+          </button>
+          <button onClick={() => onDelete(task.id)}
+            style={{ width: "100%", background: "transparent", color: "#8993A1", border: "1px solid #2A323D", borderRadius: "9px", padding: "10px", fontSize: "13px" }}>
+            Eliminar tarea
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SubtaskChecklist({ task, onSetStatus, onAdd, onRemove, onSetDate }) {
+  const [newSubtask, setNewSubtask] = React.useState("");
+  const [datePickerFor, setDatePickerFor] = React.useState(null);
+  const subtasks = task.subtasks || [];
+  const done = subtasks.filter((s) => s.status === "completada").length;
+
+  const submit = () => {
+    if (!newSubtask.trim()) return;
+    onAdd(task.id, newSubtask.trim());
+    setNewSubtask("");
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+        <div style={{ fontSize: "11px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.04em" }}>SUBTAREAS</div>
+        {subtasks.length > 0 && (
+          <div style={{ fontSize: "11px", color: "#8993A1", fontFamily: "'JetBrains Mono', monospace" }}>{done}/{subtasks.length}</div>
+        )}
+      </div>
+
+      {subtasks.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "12px" }}>
+          {subtasks.map((s) => {
+            const dateInfo = formatDate(s.date);
+            const sStatus = statusMeta(s.status);
+            const isDone = s.status === "completada";
+            return (
+              <div key={s.id} style={{ background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "9px 10px" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginBottom: "8px" }}>
+                  <span style={{ fontSize: "13px", color: isDone ? "#8993A1" : "#E6E9EE", textDecoration: isDone ? "line-through" : "none", flex: 1, lineHeight: 1.3 }}>
+                    {s.title}
+                  </span>
+                  <button
+                    onClick={() => setDatePickerFor(datePickerFor === s.id ? null : s.id)}
+                    title="Fecha de la subtarea"
+                    style={{ background: "none", border: "none", color: dateInfo ? "#F0A23D" : "#8993A1", fontSize: "13px", padding: "2px", flexShrink: 0 }}
+                  >
+                    📅
+                  </button>
+                  <button onClick={() => onRemove(task.id, s.id)} style={{ background: "none", border: "none", color: "#8993A1", fontSize: "12px", padding: "2px", flexShrink: 0 }}>✕</button>
+                </div>
+
+                <div style={{ display: "flex", gap: "3px", flexWrap: "wrap" }}>
+                  {STATUSES.map((st) => {
+                    const active = s.status === st.id;
+                    return (
+                      <button
+                        key={st.id}
+                        onClick={() => onSetStatus(task.id, s.id, st.id)}
+                        style={{
+                          border: `1px solid ${active ? st.color : "#2A323D"}`, background: active ? st.color : "transparent",
+                          color: active ? "#0E1116" : "#8993A1", borderRadius: "5px", padding: "3px 7px", fontSize: "10px",
+                          fontWeight: active ? 700 : 500, fontFamily: "'JetBrains Mono', monospace", whiteSpace: "nowrap",
+                        }}
+                      >
+                        {st.id === "completada" ? "✓ Hecha" : st.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {dateInfo && datePickerFor !== s.id && (
+                  <div style={{ fontSize: "11px", color: dateInfo.overdue ? "#FF6A3D" : "#F0A23D", fontFamily: "'JetBrains Mono', monospace", marginTop: "7px" }}>
+                    {dateInfo.text}{dateInfo.overdue ? " ⚠" : ""}
+                  </div>
+                )}
+                {datePickerFor === s.id && (
+                  <div style={{ display: "flex", gap: "6px", alignItems: "center", marginTop: "7px" }}>
+                    <input
+                      type="date"
+                      ref={(el) => { if (el) { el.focus(); try { el.showPicker(); } catch (e) {} } }}
+                      defaultValue={s.date || ""}
+                      onChange={(e) => { onSetDate(task.id, s.id, e.target.value); setDatePickerFor(null); }}
+                      style={{ background: "#0E1116", border: "1px solid #2A323D", borderRadius: "6px", padding: "5px 7px", color: "#E6E9EE", fontSize: "12px", outline: "none" }}
+                    />
+                    {s.date && (
+                      <button onClick={() => { onSetDate(task.id, s.id, null); setDatePickerFor(null); }} style={{ background: "none", border: "none", color: "#8993A1", fontSize: "11px", textDecoration: "underline" }}>
+                        quitar
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <input
+        type="text"
+        value={newSubtask}
+        onChange={(e) => setNewSubtask(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+        placeholder="+ subtarea"
+        style={{ width: "100%", background: "#1C232C", border: "1px solid #2A323D", borderRadius: "8px", padding: "9px 11px", color: "#E6E9EE", fontSize: "13px", outline: "none" }}
+      />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
